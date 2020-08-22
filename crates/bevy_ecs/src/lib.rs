@@ -4,6 +4,7 @@ mod schedule;
 mod system;
 mod world;
 
+pub use rayon;
 pub use resource::*;
 pub use schedule::*;
 pub use system::{Query, *};

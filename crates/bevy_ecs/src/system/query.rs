@@ -289,8 +289,8 @@ pub struct ParIter<'q, 'w, Q: HecsQuery> {
 
 pub struct QueryProducer<'q, 'w, Q: HecsQuery> {
     archetypes: &'w [Archetype],
-    total_len: u32,
     start_index: u32,
+    len: u32,
     _marker: PhantomData<&'q QueryBorrow<'w, Q>>,
 }
 
@@ -313,8 +313,8 @@ where
         bridge_unindexed(
             QueryProducer {
                 archetypes: self.archetypes,
-                total_len: self.archetypes.iter().map(|a| a.len()).sum(),
                 start_index: 0,
+                len: self.archetypes.iter().map(|a| a.len()).sum(),
                 _marker: PhantomData::<&QueryBorrow<'w, Q>>::default(),
             },
             consumer,
@@ -326,19 +326,19 @@ impl<'q, 'w, Q: HecsQuery> UnindexedProducer for QueryProducer<'q, 'w, Q> {
     type Item = <Q::Fetch as Fetch<'q>>::Item;
 
     fn split(self) -> (Self, Option<Self>) {
-        let mid_index = self.start_index + (self.total_len - self.start_index) / 2 + 1;
+        let split_len = (self.len + 1) / 2;
         (
             QueryProducer {
                 archetypes: self.archetypes,
-                total_len: mid_index,
                 start_index: self.start_index,
+                len: split_len,
                 _marker: PhantomData::default(),
             },
-            if mid_index < self.total_len {
+            if split_len < self.len {
                 Some(QueryProducer {
                     archetypes: self.archetypes,
-                    total_len: self.total_len - mid_index,
-                    start_index: mid_index,
+                    start_index: self.start_index + split_len,
+                    len: self.len - split_len,
                     _marker: PhantomData::default(),
                 })
             } else {
@@ -360,7 +360,7 @@ impl<'q, 'w, Q: HecsQuery> UnindexedProducer for QueryProducer<'q, 'w, Q> {
             offset -= len;
             i += 1;
         }
-        let mut len_rem = self.total_len;
+        let mut len_rem = self.len;
         while len_rem > 0 {
             let archetype = &self.archetypes[i];
             let chunk_len = len_rem.min(archetype.len() - offset);
