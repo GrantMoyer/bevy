@@ -3,6 +3,10 @@ use bevy_hecs::{
     Archetype, Component, ComponentError, Entity, Fetch, Query as HecsQuery, QueryOne, Ref, RefMut,
     World,
 };
+use rayon::iter::{
+    plumbing::{bridge_unindexed, UnindexedConsumer, UnindexedProducer},
+    IntoParallelIterator, ParallelIterator,
+};
 use std::marker::PhantomData;
 
 /// Provides scoped access to a World according to a given [HecsQuery]
@@ -257,3 +261,90 @@ impl<Q: HecsQuery> ChunkIter<Q> {
         }
     }
 }
+
+impl<'q, 'w, Q: HecsQuery> IntoParallelIterator for &'q mut QueryBorrow<'w, Q>
+where
+    <Q::Fetch as Fetch<'q>>::Item: Send,
+{
+    type Item = <Q::Fetch as Fetch<'q>>::Item;
+    type Iter = ParIter<'q, 'w, Q>;
+
+    /// Like `iter`, but returns child iterators of at most `batch_size` elements
+    ///
+    /// Useful for distributing work over a threadpool.
+    #[inline]
+    fn into_par_iter(self) -> Self::Iter {
+        ParIter {
+            archetypes: self.archetypes,
+            _marker: PhantomData::default(),
+        }
+    }
+}
+
+/// Parallel iterator over a query
+pub struct ParIter<'q, 'w, Q: HecsQuery> {
+    archetypes: &'w [Archetype],
+    _marker: PhantomData<&'q QueryBorrow<'w, Q>>,
+}
+
+pub struct QueryProducer<'q, 'w, Q: HecsQuery> {
+    archetypes: &'w [Archetype],
+    _marker: PhantomData<&'q QueryBorrow<'w, Q>>,
+}
+
+unsafe impl<'q, 'w, Q: HecsQuery> Send for ParIter<'q, 'w, Q> {}
+unsafe impl<'q, 'w, Q: HecsQuery> Sync for ParIter<'q, 'w, Q> {}
+
+unsafe impl<'q, 'w, Q: HecsQuery> Send for QueryProducer<'q, 'w, Q> {}
+unsafe impl<'q, 'w, Q: HecsQuery> Sync for QueryProducer<'q, 'w, Q> {}
+
+impl<'q, 'w, Q: HecsQuery> ParallelIterator for ParIter<'q, 'w, Q>
+where
+    <Q::Fetch as Fetch<'q>>::Item: Send,
+{
+    type Item = <Q::Fetch as Fetch<'q>>::Item;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(
+            QueryProducer {
+                archetypes: self.archetypes,
+                _marker: PhantomData::<&QueryBorrow<'w, Q>>::default(),
+            },
+            consumer,
+        )
+    }
+}
+
+impl<'q, 'w, Q: HecsQuery> UnindexedProducer for QueryProducer<'q, 'w, Q> {
+    type Item = <Q::Fetch as Fetch<'q>>::Item;
+
+    fn split(self) -> (Self, Option<Self>) {
+        (self, None)
+    }
+
+    fn fold_with<F>(self, folder: F) -> F {
+        folder
+    }
+}
+
+/// A sequence of entities yielded by `ParIter`
+pub struct Batch<'q, Q: HecsQuery> {
+    _marker: PhantomData<&'q ()>,
+    state: ChunkIter<Q>,
+}
+
+impl<'q, 'w, Q: HecsQuery> Iterator for Batch<'q, Q> {
+    type Item = <Q::Fetch as Fetch<'q>>::Item;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let components = unsafe { self.state.next()? };
+        Some(components)
+    }
+}
+
+unsafe impl<'q, Q: HecsQuery> Send for Batch<'q, Q> {}
+unsafe impl<'q, Q: HecsQuery> Sync for Batch<'q, Q> {}
