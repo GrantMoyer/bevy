@@ -4,7 +4,7 @@ use bevy_hecs::{
     World,
 };
 use rayon::iter::{
-    plumbing::{bridge_unindexed, UnindexedConsumer, UnindexedProducer},
+    plumbing::{bridge_unindexed, Folder, UnindexedConsumer, UnindexedProducer},
     IntoParallelIterator, ParallelIterator,
 };
 use std::marker::PhantomData;
@@ -289,6 +289,8 @@ pub struct ParIter<'q, 'w, Q: HecsQuery> {
 
 pub struct QueryProducer<'q, 'w, Q: HecsQuery> {
     archetypes: &'w [Archetype],
+    total_len: u32,
+    start_index: u32,
     _marker: PhantomData<&'q QueryBorrow<'w, Q>>,
 }
 
@@ -311,6 +313,8 @@ where
         bridge_unindexed(
             QueryProducer {
                 archetypes: self.archetypes,
+                total_len: self.archetypes.iter().map(|a| a.len()).sum(),
+                start_index: 0,
                 _marker: PhantomData::<&QueryBorrow<'w, Q>>::default(),
             },
             consumer,
@@ -322,10 +326,55 @@ impl<'q, 'w, Q: HecsQuery> UnindexedProducer for QueryProducer<'q, 'w, Q> {
     type Item = <Q::Fetch as Fetch<'q>>::Item;
 
     fn split(self) -> (Self, Option<Self>) {
-        (self, None)
+        let mid_index = self.start_index + (self.total_len - self.start_index) / 2 + 1;
+        (
+            QueryProducer {
+                archetypes: self.archetypes,
+                total_len: mid_index,
+                start_index: self.start_index,
+                _marker: PhantomData::default(),
+            },
+            if mid_index < self.total_len {
+                Some(QueryProducer {
+                    archetypes: self.archetypes,
+                    total_len: self.total_len - mid_index,
+                    start_index: mid_index,
+                    _marker: PhantomData::default(),
+                })
+            } else {
+                None
+            },
+        )
     }
 
-    fn fold_with<F>(self, folder: F) -> F {
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        let mut offset = self.start_index;
+        let mut i = 0;
+        for len in self.archetypes.iter().map(|a| a.len()) {
+            if offset < len {
+                break;
+            }
+            offset -= len;
+            i += 1;
+        }
+        let mut len_rem = self.total_len;
+        while len_rem > 0 {
+            let archetype = &self.archetypes[i];
+            let chunk_len = len_rem.min(archetype.len() - offset);
+            len_rem = len_rem - chunk_len;
+            if let Some(fetch) = unsafe { Q::Fetch::get(archetype, offset as usize) } {
+                folder = folder.consume_iter(Batch::<Q> {
+                    _marker: PhantomData::default(),
+                    state: ChunkIter {
+                        fetch,
+                        len: chunk_len,
+                    },
+                });
+            }
+        }
         folder
     }
 }
