@@ -364,7 +364,7 @@ impl<'q, 'w, Q: HecsQuery> UnindexedProducer for QueryProducer<'q, 'w, Q> {
         while len_rem > 0 {
             let archetype = &self.archetypes[i];
             let chunk_len = len_rem.min(archetype.len() - offset);
-            len_rem = len_rem - chunk_len;
+            len_rem -= chunk_len;
             if let Some(fetch) = unsafe { Q::Fetch::get(archetype, offset as usize) } {
                 folder = folder.consume_iter(Batch::<Q> {
                     _marker: PhantomData::default(),
